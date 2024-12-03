@@ -59,7 +59,7 @@ unsigned long lastBlynkUpdate = 0;
 float devLat = 0.0;
 float devLong = 0.0; 
 
-BLYNK_WRITE(VPIN_BUZZER)
+BLYNK_WRITE(VPIN_BUZZER) //get/change buzzer status from blynk
 {
   int state = param.asInt();
   digitalWrite(BUZZER_PIN, state == 1 ? HIGH : LOW);
@@ -70,7 +70,7 @@ double degreesToRadians(double degrees)
   return degrees * (M_PI / 180.0);
 }
 
-double haversine(double lat1, double lon1, double lat2, double lon2) {
+double haversine(double lat1, double lon1, double lat2, double lon2) { //get distance between tracker and phone and return in feet
     lat1 = degreesToRadians(lat1);
     lon1 = degreesToRadians(lon1);
     lat2 = degreesToRadians(lat2);
@@ -199,7 +199,7 @@ void setup()
   while (!Serial)
     delay(100); 
 
-  Serial2.begin(GPS_BAUD, SERIAL_8N1, RXD2, TXD2);
+  Serial2.begin(GPS_BAUD, SERIAL_8N1, RXD2, TXD2); //start the gps module
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
   Wire.begin(21, 22);
@@ -215,7 +215,7 @@ void setup()
   myIMU.setAccelRange(2);
   myIMU.setAccelDataRate(52);
 
-  Blynk.begin(BLYNK_AUTH_TOKEN, "vwireless2", "Phamily1");
+  Blynk.begin(BLYNK_AUTH_TOKEN, "", ""); //put wifi details in
 
   // Initialize the Serial display
   /*BLEDevice::init("MyESP32");

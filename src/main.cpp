@@ -59,6 +59,34 @@ unsigned long lastBlynkUpdate = 0;
 float devLat = 0.0;
 float devLong = 0.0; 
 
+
+
+// Add this function with your other functions
+float readBatteryLevel() {
+    const int SAMPLES = 10;
+    float totalVoltage = 0;
+    
+    // Take multiple samples for more stable reading
+    for(int i = 0; i < SAMPLES; i++) {
+        int rawValue = analogRead(BATTERY_PIN);
+        float voltage = (rawValue / (float)ADC_RESOLUTION) * ADC_REFERENCE * VOLTAGE_DIVIDER_RATIO;
+        totalVoltage += voltage;
+        delay(10);
+    }
+    
+    // Calculate average voltage
+    float averageVoltage = totalVoltage / SAMPLES;
+    
+    // Calculate percentage based on max and min voltages
+    float percentage = ((averageVoltage - BATTERY_MIN_VOLTAGE) / (BATTERY_MAX_VOLTAGE - BATTERY_MIN_VOLTAGE)) * 100.0;
+    percentage = constrain(percentage, 0.0, 100.0);
+    
+    batteryVoltage = averageVoltage;
+    batteryPercentage = percentage;
+    
+    return percentage;
+}
+
 BLYNK_WRITE(VPIN_BUZZER) //get/change buzzer status from blynk
 {
   int state = param.asInt();

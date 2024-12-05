@@ -87,6 +87,38 @@ float readBatteryLevel() {
     return percentage;
 }
 
+
+// AWS
+
+void sendToAWS() {
+    if (millis() - lastAWSUpdate >= AWS_UPDATE_INTERVAL) {
+        StaticJsonDocument<200> doc;
+        
+        doc["device_id"] = "ESP32_GPS_TRACKER";
+        doc["latitude"] = gpsLat;
+        doc["longitude"] = gpsLong;
+        doc["speed"] = currentSpeed;
+        doc["motion"] = motionDetected;
+        doc["distance"] = distance;
+        doc["battery_voltage"] = batteryVoltage;
+        doc["battery_percentage"] = batteryPercentage;
+        doc["timestamp"] = millis();
+
+        char jsonBuffer[512];
+        serializeJson(doc, jsonBuffer);
+
+        if (aws.publish(AWS_TOPIC, jsonBuffer) == 0) {
+            Serial.println("Published to AWS:");
+            Serial.println(jsonBuffer);
+        } else {
+            Serial.println("Failed to publish to AWS");
+        }
+
+        lastAWSUpdate = millis();
+    }
+}
+
+
 BLYNK_WRITE(VPIN_BUZZER) //get/change buzzer status from blynk
 {
   int state = param.asInt();

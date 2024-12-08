@@ -2,17 +2,22 @@
 #define BLYNK_TEMPLATE_NAME "Fake Airtag"
 #define BLYNK_AUTH_TOKEN "CvByw8Egr7QDhwunZqFFiCAm4V848_Bk"
 
+#include "secrets.h"
 #include <TinyGPS++.h>
 #include <SparkFunLSM6DSO.h>
 #include <Wire.h>
 #include <HardwareSerial.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>  
+#include <ArduinoJson.h>
 #include <BlynkSimpleEsp32.h>
 #include <Arduino.h>
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
+
 #define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
@@ -21,6 +26,9 @@
 #define TXD2 26
 #define BUZZER_PIN 33
 #define GPS_BAUD 9600
+#define AWS_IOT_PORT 8883
+#define AWS_IOT_PUBLISH_TOPIC "tracker/data"
+#define PUBLISH_INTERVAL 5000
 
 #define VPIN_LATITUDE V0  
 #define VPIN_LONGITUDE V1 
@@ -58,6 +66,42 @@ LSM6DSO myIMU;
 unsigned long lastBlynkUpdate = 0;
 float devLat = 0.0;
 float devLong = 0.0; 
+WiFiClientSecure wifiClient;
+PubSubClient mqttClient(wifiClient);
+unsigned long lastPublishTime = 0;
+
+void connectToAWS() {
+    while (!mqttClient.connected()) {
+        Serial.print("Attempting MQTT connection...");
+        if (mqttClient.connect("ESP32_GPS_Tracker")) {
+            Serial.println("connected");
+        } else {
+            Serial.print("failed, rc=");
+            Serial.print(mqttClient.state());
+            Serial.println(" retrying in 2 seconds");
+            delay(2000);
+        }
+    }
+}
+
+void publishToAWS() {
+    if (!mqttClient.connected()) {
+        connectToAWS();
+    }
+
+    StaticJsonDocument<200> doc;
+    doc["device_id"] = "ESP32_GPS_Tracker";
+    doc["latitude"] = gpsLat;
+    doc["longitude"] = gpsLong;
+    doc["speed"] = currentSpeed;
+    doc["motion"] = motionDetected;
+    doc["distance"] = distance;
+    
+    char jsonBuffer[512];
+    serializeJson(doc, jsonBuffer);
+    
+    mqttClient.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
+}
 
 BLYNK_WRITE(VPIN_BUZZER) //get/change buzzer status from blynk
 {
@@ -216,6 +260,12 @@ void setup()
   myIMU.setAccelDataRate(52);
 
   Blynk.begin(BLYNK_AUTH_TOKEN, "", ""); //put wifi details in
+  wifiClient.setCACert(ROOT_CA);
+  wifiClient.setCertificate(DEVICE_CERT);
+  wifiClient.setPrivateKey(PRIVATE_KEY);
+
+  mqttClient.setServer(AWS_IOT_ENDPOINT, AWS_IOT_PORT);
+  connectToAWS();
 
   // Initialize the Serial display
   /*BLEDevice::init("MyESP32");
@@ -326,4 +376,10 @@ void loop()
   Blynk.virtualWrite(VPIN_MOTION, isMoving ? 1 : 0);
 
   delay(500);
+  mqttClient.loop();
+
+  if (millis() - lastPublishTime > PUBLISH_INTERVAL) {
+      publishToAWS();
+      lastPublishTime = millis();
+}
 }

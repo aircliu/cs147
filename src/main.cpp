@@ -17,6 +17,7 @@
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
+#include <driver/adc.h>
 
 #define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
@@ -25,7 +26,15 @@
 #define RXD2 25
 #define TXD2 26
 #define BUZZER_PIN 33
+#define BATTERY_PIN 36
 #define GPS_BAUD 9600
+#define ADC_RESOLUTION 4095.0  
+#define ADC_REFERENCE 3.3
+#define VOLTAGE_DIVIDER_RATIO 2.0  
+#define BATTERY_MAX_VOLTAGE 4.2   
+#define BATTERY_MIN_VOLTAGE 3.3    
+#define BATTERY_READ_SAMPLES 10    
+#define BATTERY_SAMPLE_DELAY 10
 #define AWS_IOT_PORT 8883
 #define AWS_IOT_PUBLISH_TOPIC "tracker/data"
 #define PUBLISH_INTERVAL 5000
@@ -61,6 +70,11 @@ float gpsLat = 0.0;
 float gpsLong = 0.0;
 float distance = 0.0;
 
+float batteryVoltage = 0.0;
+float batteryPercentage = 0.0;
+bool isLow = false;
+long lastReadTime;
+
 TinyGPSPlus gps;
 LSM6DSO myIMU;
 unsigned long lastBlynkUpdate = 0;
@@ -89,19 +103,59 @@ void publishToAWS() {
         connectToAWS();
     }
 
-    StaticJsonDocument<200> doc;
+    StaticJsonDocument<128> doc;
     doc["device_id"] = "ESP32_GPS_Tracker";
     doc["latitude"] = gpsLat;
     doc["longitude"] = gpsLong;
     doc["speed"] = currentSpeed;
     doc["motion"] = motionDetected;
     doc["distance"] = distance;
+    doc["battery_voltage"] = batteryVoltage;
+    doc["battery_percentage"] = batteryPercentage;
+    doc["timestamp"] = millis();
     
-    char jsonBuffer[512];
+    char jsonBuffer[256];
     serializeJson(doc, jsonBuffer);
     
-    mqttClient.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
+    if (mqttClient.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer)) {
+        Serial.println("Published to AWS:");
+        Serial.println(jsonBuffer);
+    }
+    else {
+        Serial.println("Failed to publish to AWS");
+    };
 }
+
+void setupBattery() {
+    analogSetPinAttenuation(BATTERY_PIN, ADC_11db);  // Set attenuation for 3.3V range
+    analogSetWidth(12);  // Set ADC resolution to 12 bits
+}
+
+float readBatteryLevel() {
+    const int SAMPLES = 10;
+    float totalVoltage = 0;
+    
+    // Take multiple samples for more stable reading
+    for(int i = 0; i < SAMPLES; i++) {
+        int rawValue = analogRead(BATTERY_PIN);
+        float voltage = (rawValue / (float)ADC_RESOLUTION) * ADC_REFERENCE * VOLTAGE_DIVIDER_RATIO;
+        totalVoltage += voltage;
+        delay(10);
+    }
+    
+    // Calculate average voltage
+    float averageVoltage = totalVoltage / SAMPLES;
+    
+    // Calculate percentage based on max and min voltages
+    float percentage = ((averageVoltage - BATTERY_MIN_VOLTAGE) / (BATTERY_MAX_VOLTAGE - BATTERY_MIN_VOLTAGE)) * 100.0;
+    percentage = constrain(percentage, 0.0, 100.0);
+    
+    batteryVoltage = averageVoltage;
+    batteryPercentage = percentage;
+    
+    return percentage;
+}
+
 
 BLYNK_WRITE(VPIN_BUZZER) //get/change buzzer status from blynk
 {
@@ -156,26 +210,9 @@ BLYNK_WRITE(VPIN_DEVLONG) {
   void onWrite(BLECharacteristic *pCharacteristic) {
     std::string value = pCharacteristic->getValue();
     if (value.length() > 0) {
-      Serial.println("*********");
-      Serial.print("New value: ");
-      for (int i = 0; i < value.length(); i++)
-        Serial.print(value[i]);
-      Serial.println();
-      Serial.println("*********");
 
       if (value == "BUZZ") {
-        Serial.println("Starting buzzer");
-      }
-      else {
-        int space = value.find(' ');
-        if (space != std::string::npos) {
-          std::string latitude = value.substr(0, space);
-          std::string longitude = value.substr(space + 1);
-
-          double distance = haversine(gpsLat, gpsLong, std::stod(latitude), std::stod(longitude));
-          std::string currDistance = std::to_string(distance) + " " + "feet away";
-          pCharacteristic->setValue(currDistance);
-        }
+        digitalWrite(BUZZER_PIN, HIGH);
       }
     }
   }
@@ -250,14 +287,12 @@ void setup()
   delay(10);
   while (!myIMU.begin())
   {
-    Serial.println("Could not connect to IMU.");
     delay(1000);
   }
-  Serial.println("Ready.");
   if (myIMU.initialize(BASIC_SETTINGS))
-    Serial.println("Loaded Settings.");
   myIMU.setAccelRange(2);
   myIMU.setAccelDataRate(52);
+  setupBattery();
 
   Blynk.begin(BLYNK_AUTH_TOKEN, "", ""); //put wifi details in
   wifiClient.setCACert(ROOT_CA);
@@ -268,7 +303,7 @@ void setup()
   connectToAWS();
 
   // Initialize the Serial display
-  /*BLEDevice::init("MyESP32");
+  /*BLEDevice::init("FakeAirTag");
   BLEServer *pServer = BLEDevice::createServer();
   BLEService *pService = pServer->createService(SERVICE_UUID);
   BLECharacteristic *pCharacteristic = pService->createCharacteristic(
@@ -289,15 +324,6 @@ void loop()
   unsigned long startTime = millis();
   Blynk.run();
 
-  if (gps.location.isValid())
-  {
-    //Blynk.virtualWrite(VPIN_STATUS, "GPS Fixed");
-  }
-  else
-  {
-    //Blynk.virtualWrite(VPIN_STATUS, "Searching GPS");
-  }
-
   while ((millis() - startTime) < 1000)
   {
     while (Serial2.available() > 0)
@@ -314,8 +340,6 @@ void loop()
 
   if (newData)
   {
-    Serial.println("Parsed GPS Data:");
-    Serial.println("----------------");
 
     if (gps.location.isValid())
     {
@@ -324,29 +348,15 @@ void loop()
 
       Serial.print("Latitude: ");
       gpsLat = gps.location.lat();
-      Serial.println(gpsLat, 6);
+      Serial.println(gpsLat);
       Serial.print("Longitude: ");
       gpsLong = gps.location.lng();
-      Serial.println(gpsLong, 6);
+      Serial.println(gpsLong);
 
-      if (gps.altitude.isValid())
-      {
-        Serial.print("Altitude: ");
-        Serial.print(gps.altitude.meters());
-        Serial.println(" m");
-      }
-
-      if (gps.speed.isValid())
-      {
-        Serial.print("Speed: ");
-        Serial.print(gps.speed.kmph());
-        Serial.println(" km/h");
-      }
     }
   }
 
   float speed = calcSpeed();
-  Serial.println(speed);
   if (gps.location.isValid())
   {
     Blynk.virtualWrite(VPIN_LATITUDE, gps.location.lat());
@@ -364,17 +374,15 @@ void loop()
     Serial.println("\n*** NO VALID POSITION DATA ***");
     Serial.println("Waiting for GPS fix");
   }
-  else if (validDataReceived && (millis() - lastValidData) > 10000)
-  {
-    Serial.println("\n*** GPS SIGNAL LOST ***");
-    Serial.println("Check GPS antenna and visibility");
-  }
-
-  Serial.println("\n==============================\n");
 
   bool isMoving = checkMotion();
   Blynk.virtualWrite(VPIN_MOTION, isMoving ? 1 : 0);
 
+  readBatteryLevel();
+  Serial.println(batteryPercentage);
+  Serial.println(batteryVoltage);
+
+  Blynk.virtualWrite(VPIN_BATTERY, batteryPercentage);
   delay(500);
   mqttClient.loop();
 
